@@ -340,5 +340,97 @@ class BucleDelAgenteTest(unittest.TestCase):
                     self.assertNotEqual(message.get("tool_calls", None), [])
 
 
+RESUMEN_ALUCINADO = """RESUMEN: Lucia Ramos, de InnovaTech, solicita el portal de clientes.
+
+ACCIONES EJECUTADAS:
+- Ticket creado en Jira (proyecto VENTAS): "[InnovaTech] Requisitos portal de clientes".
+- Contacto actualizado en CRM: Lucia Ramos (InnovaTech), lead_status "calificado".
+
+PENDIENTES:
+- No se agendo reunion: falta dia y hora.
+
+SIGUIENTE PASO SUGERIDO: Contactar a Lucia Ramos para confirmar la reunion."""
+
+RESUMEN_SIN_ACCIONES = """RESUMEN: Lucia Ramos escribe pidiendo informacion.
+
+ACCIONES EJECUTADAS: Ninguna
+
+PENDIENTES:
+- Falta concretar dia y hora.
+
+SIGUIENTE PASO SUGERIDO: Responder al cliente."""
+
+TICKET_ARGS = json.dumps(
+    {
+        "project_key": "VENTAS",
+        "summary": "[InnovaTech] Requisitos portal de clientes",
+        "description": "- Reportes mensuales.",
+        "priority": "Medium",
+        "issue_type": "Story",
+    }
+)
+
+
+class DeteccionDeAlucinacionesTest(unittest.TestCase):
+    def test_detecta_acciones_declaradas_sin_herramientas_invocadas(self):
+        problemas = agent.detect_inconsistencies(RESUMEN_ALUCINADO, [])
+        self.assertTrue(problemas)
+        self.assertIn("no se invocó ninguna herramienta", problemas[0])
+
+    def test_no_marca_un_resumen_que_declara_ninguna_accion(self):
+        self.assertEqual(agent.detect_inconsistencies(RESUMEN_SIN_ACCIONES, []), [])
+
+    def test_detecta_identificadores_inventados(self):
+        ejecutadas = [{"name": "crear_ticket_en_jira", "arguments": {}, "result": {"ok": True, "id": "VENTAS-101"}}]
+        resumen = "RESUMEN: x\n\nACCIONES EJECUTADAS:\n- Ticket VENTAS-999 creado.\n\nPENDIENTES: Ninguno"
+        problemas = agent.detect_inconsistencies(resumen, ejecutadas)
+        self.assertTrue(problemas)
+        self.assertIn("VENTAS-999", problemas[0])
+
+    def test_no_marca_un_resumen_consistente(self):
+        ejecutadas = [{"name": "crear_ticket_en_jira", "arguments": {}, "result": {"ok": True, "id": "VENTAS-101"}}]
+        resumen = "RESUMEN: x\n\nACCIONES EJECUTADAS:\n- Ticket VENTAS-101 creado.\n\nPENDIENTES: Ninguno"
+        self.assertEqual(agent.detect_inconsistencies(resumen, ejecutadas), [])
+
+    def test_ignora_respuestas_sin_la_seccion_esperada(self):
+        self.assertEqual(agent.detect_inconsistencies("texto libre sin secciones", []), [])
+
+
+class ReparacionDeAlucinacionesTest(unittest.TestCase):
+    def setUp(self):
+        mock_services.reset_log()
+        mock_services.set_reference_date(REFERENCIA)
+
+    def test_pide_correccion_y_el_modelo_ejecuta_la_herramienta(self):
+        client = FakeClient(
+            [
+                ("stop", RESUMEN_ALUCINADO, []),
+                ("stop", None, [("crear_ticket_en_jira", TICKET_ARGS)]),
+                ("stop", "RESUMEN: ok\n\nACCIONES EJECUTADAS:\n- Ticket VENTAS-101.\n\nPENDIENTES: Ninguno", []),
+            ]
+        )
+        result = agent.run_agent("correo", REFERENCIA, client=client)
+        self.assertEqual(len(result["tool_calls"]), 1)
+        self.assertEqual(result["warnings"], [])
+
+    def test_advierte_si_el_modelo_insiste_en_la_alucinacion(self):
+        client = FakeClient([("stop", RESUMEN_ALUCINADO, []), ("stop", RESUMEN_ALUCINADO, [])])
+        result = agent.run_agent("correo", REFERENCIA, client=client)
+        self.assertEqual(result["tool_calls"], [])
+        self.assertTrue(result["warnings"])
+        self.assertEqual(result["final_response"], RESUMEN_ALUCINADO)
+
+    def test_solo_reintenta_una_vez(self):
+        client = FakeClient([("stop", RESUMEN_ALUCINADO, []), ("stop", RESUMEN_ALUCINADO, [])])
+        agent.run_agent("correo", REFERENCIA, client=client)
+        self.assertEqual(len(client.requests), 2)
+
+    def test_una_corrida_consistente_no_genera_advertencias(self):
+        client = FakeClient([("stop", RESUMEN_SIN_ACCIONES, [])])
+        result = agent.run_agent("correo", REFERENCIA, client=client)
+        self.assertEqual(result["warnings"], [])
+        self.assertEqual(len(client.requests), 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

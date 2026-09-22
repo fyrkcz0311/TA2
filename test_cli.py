@@ -20,6 +20,9 @@ def procesar(email_path: Path, today_iso: str) -> bool:
         print(f"ERROR: {result['error']}")
         return False
 
+    for warning in result["warnings"]:
+        print(f"ADVERTENCIA: {warning}")
+
     print("RESPUESTA FINAL")
     print(result["final_response"])
     print(f"\nHERRAMIENTAS INVOCADAS: {len(result['tool_calls'])}")

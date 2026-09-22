@@ -64,6 +64,15 @@ utp_assistant/
 
 Los tres schemas declaran `strict`, `additionalProperties: false` y todos sus parámetros como obligatorios. `mock_services.py` vuelve a validar cada argumento antes de simular el efecto, de modo que un argumento alucinado se rechaza con `{"ok": false, "error": ...}` y el modelo recibe ese error para corregirse.
 
+## Verificación anti-alucinación
+
+El riesgo más grave del sistema es que el modelo redacte "ticket creado" sin haber invocado la herramienta. `agent.detect_inconsistencies()` compara, de forma determinista y sin depender del modelo, lo que la sección ACCIONES EJECUTADAS afirma contra los identificadores realmente devueltos por los servicios. Detecta dos casos:
+
+1. El resumen declara acciones pero no se invocó ninguna herramienta con éxito.
+2. El resumen cita identificadores que ningún servicio devolvió.
+
+Ante cualquiera de los dos, el agente devuelve el fallo al modelo una vez para que se corrija (invocando las herramientas o moviendo lo pendiente a PENDIENTES). Si insiste, la incidencia se expone como advertencia en la interfaz en lugar de silenciarse.
+
 ## Traza de auditoría
 
 Cada invocación queda registrada con sus argumentos, su resultado y su marca de tiempo. La interfaz la muestra al pie bajo "Traza de auditoría de la sesión"; en código se consulta con `mock_services.get_execution_log()`.

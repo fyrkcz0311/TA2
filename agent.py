@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Mapping, NamedTuple
 
 from dotenv import load_dotenv
@@ -18,6 +19,20 @@ DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-chat"
 MAX_ITERATIONS = 5
 FALSY = {"false", "0", "no", "off"}
+
+SECCIONES = ("RESUMEN", "ACCIONES EJECUTADAS", "PENDIENTES", "SIGUIENTE PASO SUGERIDO")
+
+# Identificadores que devuelven los servicios: VENTAS-101, evt_a1b2c3d4, crm_a1b2c3d4.
+ID_PATTERN = re.compile(r"\b(?:VENTAS|PROY)-\d+\b|\b(?:evt|crm)_[0-9a-f]{8}\b")
+
+CORRECCION = (
+    "VERIFICACIÓN AUTOMÁTICA FALLIDA. "
+    "Tu resumen declara acciones que en realidad no se ejecutaron: {detalle} "
+    "Solo cuenta como ejecutada una acción si invocaste la herramienta y recibiste "
+    "su identificador. Corrige ahora: invoca las herramientas que correspondan, o "
+    "reescribe el resumen con 'ACCIONES EJECUTADAS: Ninguna' y mueve lo que no "
+    "pudiste hacer a PENDIENTES."
+)
 
 
 class ConfigError(RuntimeError):
@@ -93,6 +108,57 @@ def _execute_tool(name: str, raw_arguments: str) -> tuple[Any, dict[str, Any]]:
         return arguments, {"ok": False, "error": f"parámetros inválidos: {exc}"}
 
 
+def _seccion(text: str, header: str) -> str | None:
+    """Extrae el cuerpo de una sección del resumen, o None si no existe."""
+    inicio = text.find(header)
+    if inicio == -1:
+        return None
+    cuerpo = text[inicio + len(header):].lstrip(":").lstrip()
+    posiciones = [
+        cuerpo.find(otra) for otra in SECCIONES if otra != header and cuerpo.find(otra) != -1
+    ]
+    return cuerpo[: min(posiciones)].strip() if posiciones else cuerpo.strip()
+
+
+def detect_inconsistencies(
+    final_response: str, tool_calls: list[dict[str, Any]]
+) -> list[str]:
+    """Compara lo que el resumen afirma contra lo que realmente se ejecutó.
+
+    El riesgo principal del sistema es que el modelo redacte "ticket creado" sin
+    haber invocado la herramienta: el equipo interno daría por hecha una acción
+    inexistente. Esta verificación es determinista y no depende del modelo.
+    """
+    seccion = _seccion(final_response, "ACCIONES EJECUTADAS")
+    if seccion is None:
+        return []
+
+    ejecutados = {
+        call["result"]["id"]
+        for call in tool_calls
+        if isinstance(call.get("result"), dict)
+        and call["result"].get("ok")
+        and call["result"].get("id")
+    }
+    declara_ninguna = seccion.lower().lstrip("- ").startswith("ninguna")
+
+    problemas: list[str] = []
+    if seccion and not declara_ninguna and not ejecutados:
+        problemas.append(
+            "El resumen declara acciones ejecutadas pero no se invocó ninguna "
+            "herramienta con éxito."
+        )
+
+    inventados = set(ID_PATTERN.findall(seccion)) - ejecutados
+    if inventados:
+        problemas.append(
+            "El resumen menciona identificadores que ningún servicio devolvió: "
+            + ", ".join(sorted(inventados))
+            + "."
+        )
+    return problemas
+
+
 def run_agent(
     email_text: str,
     today_iso: str,
@@ -103,7 +169,9 @@ def run_agent(
     messages: list[dict[str, Any]] = []
     tool_calls_summary: list[dict[str, Any]] = []
     final_response = ""
+    warnings: list[str] = []
     error: str | None = None
+    correccion_pedida = False
 
     try:
         # Los servicios simulados validan contra la misma fecha que ve el modelo.
@@ -157,7 +225,21 @@ def run_agent(
             # La presencia de tool_calls es la única señal fiable: algunos
             # proveedores (DeepSeek) devuelven finish_reason="stop" con llamadas.
             if not tool_calls:
-                final_response = content or ""
+                candidato = content or ""
+                problemas = detect_inconsistencies(candidato, tool_calls_summary)
+                # Se le da una sola oportunidad de corregirse; si insiste, la
+                # advertencia viaja hasta la interfaz en lugar de silenciarse.
+                if problemas and not correccion_pedida:
+                    correccion_pedida = True
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": CORRECCION.format(detalle=" ".join(problemas)),
+                        }
+                    )
+                    continue
+                final_response = candidato
+                warnings = problemas
                 break
 
             for serialized_call in assistant_message["tool_calls"]:
@@ -203,5 +285,6 @@ def run_agent(
         "final_response": final_response,
         "tool_calls": tool_calls_summary,
         "messages": messages,
+        "warnings": warnings,
         "error": error,
     }

@@ -72,6 +72,8 @@ if st.button("Procesar correo", disabled=not bool(api_key)):
 for run in st.session_state["runs"]:
     if run["error"] is not None:
         st.error(run["error"])
+    for warning in run["warnings"]:
+        st.warning(f"Verificación automática: {warning}")
 
     st.subheader("Respuesta al equipo interno")
     st.code(run["final_response"] or "(sin respuesta)", language=None)
