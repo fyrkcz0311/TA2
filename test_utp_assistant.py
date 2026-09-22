@@ -392,8 +392,8 @@ class DeteccionDeAlucinacionesTest(unittest.TestCase):
         resumen = "RESUMEN: x\n\nACCIONES EJECUTADAS:\n- Ticket VENTAS-101 creado.\n\nPENDIENTES: Ninguno"
         self.assertEqual(agent.detect_inconsistencies(resumen, ejecutadas), [])
 
-    def test_ignora_respuestas_sin_la_seccion_esperada(self):
-        self.assertEqual(agent.detect_inconsistencies("texto libre sin secciones", []), [])
+    def test_advierte_respuestas_sin_la_seccion_esperada(self):
+        self.assertTrue(agent.detect_inconsistencies("texto libre sin secciones", []))
 
 
 class ReparacionDeAlucinacionesTest(unittest.TestCase):

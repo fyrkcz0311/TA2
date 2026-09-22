@@ -32,12 +32,12 @@ streamlit run app.py
 ## Pruebas
 
 ```bash
-python -m unittest test_utp_assistant   # 25 pruebas, sin red ni API key
+python -m unittest discover -v          # pruebas locales, sin red ni API key
 python test_cli.py                      # los 3 correos contra el proveedor real
 python test_cli.py 03_inyeccion.txt     # un correo concreto
 ```
 
-`test_utp_assistant.py` usa un cliente LLM simulado, así que no consume créditos. Cubre el bucle de herramientas, la resolución de configuración, los schemas y las validaciones de los servicios simulados.
+Las suites `test_utp_assistant.py` y `test_regressions.py` usan clientes LLM simulados, así que no consumen créditos. Cubren el bucle de herramientas, la configuración, los schemas, las validaciones, el aislamiento entre sesiones y la interfaz Streamlit.
 
 ## Estructura
 
@@ -66,13 +66,19 @@ Los tres schemas declaran `strict`, `additionalProperties: false` y todos sus pa
 
 ## Verificación anti-alucinación
 
-El riesgo más grave del sistema es que el modelo redacte "ticket creado" sin haber invocado la herramienta. `agent.detect_inconsistencies()` compara, de forma determinista y sin depender del modelo, lo que la sección ACCIONES EJECUTADAS afirma contra los identificadores realmente devueltos por los servicios. Detecta dos casos:
+El riesgo más grave del sistema es que el modelo redacte "ticket creado" sin haber invocado la herramienta. `agent.detect_inconsistencies()` compara la sección ACCIONES EJECUTADAS contra los identificadores realmente devueltos por los servicios. Detecta:
 
 1. El resumen declara acciones pero no se invocó ninguna herramienta con éxito.
 2. El resumen cita identificadores que ningún servicio devolvió.
+3. Una línea carece de identificador válido, o menciona un tipo de acción (ticket, reunión, contacto) sin un identificador de esa herramienta.
+4. Falta la sección, está vacía o declara "Ninguna" pese a existir ejecuciones exitosas.
 
-Ante cualquiera de los dos, el agente devuelve el fallo al modelo una vez para que se corrija (invocando las herramientas o moviendo lo pendiente a PENDIENTES). Si insiste, la incidencia se expone como advertencia en la interfaz en lugar de silenciarse.
+Ante una inconsistencia, el agente devuelve el fallo al modelo una vez para que se corrija. Si insiste, la incidencia se expone como advertencia en la interfaz. La comprobación textual es conservadora y no equivale a verificar semánticamente cualquier redacción posible.
 
 ## Traza de auditoría
 
-Cada invocación queda registrada con sus argumentos, su resultado y su marca de tiempo. La interfaz la muestra al pie bajo "Traza de auditoría de la sesión"; en código se consulta con `mock_services.get_execution_log()`.
+Cada invocación queda registrada con sus argumentos, resultado y marca de tiempo. Streamlit conserva un `ServiceState` por sesión: limpiar una sesión no afecta a las demás. Los argumentos y resultados se copian al registrar y al consultar, para impedir modificaciones accidentales del historial.
+
+`run_agent()` devuelve la auditoría en `result["audit_log"]`. Para acumular varias ejecuciones, pasa el mismo `service_state=mock_services.ServiceState()` y consulta `mock_services.get_execution_log(state)`. Sin estado explícito, cada llamada al agente está aislada.
+
+Las reuniones se validan contra la hora real actual y el comienzo de la fecha simulada, tomando el mayor de ambos. El día de la semana se calcula en America/Lima incluso cuando se recibe otro offset. Los servicios validan localmente los tipos de todos los argumentos; el email del CRM puede estar vacío si se desconoce.

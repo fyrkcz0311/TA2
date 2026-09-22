@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import datetime
 import os
 from pathlib import Path
 
@@ -31,6 +31,8 @@ st.title("UTP Assistant - Procesador de correos")
 
 if "runs" not in st.session_state:
     st.session_state["runs"] = []
+if "service_state" not in st.session_state:
+    st.session_state["service_state"] = mock_services.ServiceState()
 if "selected_email" not in st.session_state:
     st.session_state["selected_email"] = "01_techcorp.txt"
 if "email_text" not in st.session_state:
@@ -39,8 +41,8 @@ if "email_text" not in st.session_state:
 with st.sidebar:
     simulated_date = st.date_input(
         "Fecha actual simulada",
-        value=date.today(),
-        min_value=date.today(),
+        value=datetime.now(mock_services.LIMA_TZ).date(),
+        min_value=datetime.now(mock_services.LIMA_TZ).date(),
         help="Solo permite adelantar el reloj. Retroceder no habilitaría agendar "
         "en el pasado: los servicios validan también contra la fecha real.",
     )
@@ -49,7 +51,7 @@ with st.sidebar:
     st.caption(f"Schemas strict: {os.getenv('LLM_STRICT_TOOLS') or 'true'}")
     if st.button("Limpiar historial"):
         st.session_state["runs"] = []
-        mock_services.reset_log()
+        mock_services.reset_log(st.session_state["service_state"])
 
 test_emails = sorted(path.name for path in EMAILS_DIR.glob("*.txt"))
 st.selectbox(
@@ -66,7 +68,7 @@ if not api_key:
 
 if st.button("Procesar correo", disabled=not bool(api_key)):
     with st.spinner("Analizando correo y ejecutando acciones..."):
-        result = run_agent(email_text, simulated_date.isoformat())
+        result = run_agent(email_text, simulated_date.isoformat(), service_state=st.session_state["service_state"])
     st.session_state["runs"].insert(0, result)
 
 for run in st.session_state["runs"]:
@@ -93,7 +95,7 @@ for run in st.session_state["runs"]:
     with st.expander("Historial de mensajes crudo"):
         st.json(run["messages"])
 
-audit_log = mock_services.get_execution_log()
+audit_log = mock_services.get_execution_log(st.session_state["service_state"])
 st.divider()
 with st.expander(f"Traza de auditoría de la sesión ({len(audit_log)} llamadas)"):
     if not audit_log:

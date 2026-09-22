@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone
+from contextlib import contextmanager
+from contextvars import ContextVar
+from copy import deepcopy
+from dataclasses import dataclass, field
 import hashlib
+import re
 from typing import Any
 
 
@@ -23,9 +28,32 @@ VALID_LEAD_STATUSES = {
 
 LIMA_TZ = timezone(timedelta(hours=-5))
 
-EXECUTION_LOG: list[dict[str, Any]] = []
-_ticket_counter = 101
-_reference_date: date | None = None
+@dataclass
+class ServiceState:
+    execution_log: list[dict[str, Any]] = field(default_factory=list)
+    ticket_counter: int = 101
+    reference_date: date | None = None
+
+
+_state: ContextVar[ServiceState | None] = ContextVar("service_state", default=None)
+
+
+def _current_state() -> ServiceState:
+    state = _state.get()
+    if state is None:
+        state = ServiceState()
+        _state.set(state)
+    return state
+
+
+@contextmanager
+def service_session(state: ServiceState):
+    """Activa el estado del llamador y restaura el contexto incluso si falla."""
+    token = _state.set(state)
+    try:
+        yield state
+    finally:
+        _state.reset(token)
 
 
 def set_reference_date(value: str | date | None) -> None:
@@ -34,11 +62,10 @@ def set_reference_date(value: str | date | None) -> None:
     Solo sirve para adelantar el reloj: ver `_earliest_allowed_start`.
     None vuelve al reloj real.
     """
-    global _reference_date
     if value is None or isinstance(value, date):
-        _reference_date = value
+        _current_state().reference_date = value
     else:
-        _reference_date = date.fromisoformat(value)
+        _current_state().reference_date = date.fromisoformat(value)
 
 
 def _earliest_allowed_start() -> datetime:
@@ -48,31 +75,44 @@ def _earliest_allowed_start() -> datetime:
     fecha simulada permitiría anular la validación retrocediendo el reloj:
     con "hoy" en 2020 cualquier reunión de 2020 pasaría el control.
     """
-    today = datetime.now(LIMA_TZ).date()
-    reference = max(_reference_date, today) if _reference_date else today
-    return datetime.combine(reference, time.min, tzinfo=LIMA_TZ)
+    now = datetime.now(LIMA_TZ)
+    reference = _current_state().reference_date
+    if reference is None:
+        return now
+    return max(now, datetime.combine(reference, time.min, tzinfo=LIMA_TZ))
 
 
-def reset_log() -> None:
+def reset_log(state: ServiceState | None = None) -> None:
     """Elimina la traza de ejecuciones registradas durante la sesión actual."""
-    EXECUTION_LOG.clear()
+    (state or _current_state()).execution_log.clear()
 
 
-def get_execution_log() -> list[dict[str, Any]]:
+def get_execution_log(state: ServiceState | None = None) -> list[dict[str, Any]]:
     """Devuelve una copia de la traza de auditoría de todas las herramientas ejecutadas."""
-    return list(EXECUTION_LOG)
+    return deepcopy((state or _current_state()).execution_log)
 
 
 def _log(tool: str, args: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
-    EXECUTION_LOG.append(
-        {
+    _current_state().execution_log.append(
+        deepcopy({
             "tool": tool,
             "args": args,
             "result": result,
             "ts": datetime.now(timezone.utc).isoformat(),
-        }
+        })
     )
     return result
+
+
+def _string_error(args: dict[str, Any], fields: tuple[str, ...]) -> str | None:
+    for name in fields:
+        if not isinstance(args[name], str):
+            return f"{name} debe ser una cadena de texto"
+    return None
+
+
+def _valid_email(value: str) -> bool:
+    return re.fullmatch(r"[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+", value) is not None
 
 
 def crear_ticket_en_jira(
@@ -83,7 +123,6 @@ def crear_ticket_en_jira(
     issue_type: str,
 ) -> dict[str, Any]:
     """Simula la creación de un ticket de Jira y valida su contrato."""
-    global _ticket_counter
 
     args = {
         "project_key": project_key,
@@ -92,6 +131,9 @@ def crear_ticket_en_jira(
         "priority": priority,
         "issue_type": issue_type,
     }
+    error = _string_error(args, tuple(args))
+    if error:
+        return _log("crear_ticket_en_jira", args, {"ok": False, "error": error})
     if project_key not in VALID_PROJECT_KEYS:
         return _log(
             "crear_ticket_en_jira",
@@ -117,8 +159,9 @@ def crear_ticket_en_jira(
             {"ok": False, "error": "summary debe tener como máximo 80 caracteres"},
         )
 
-    ticket_id = f"{project_key}-{_ticket_counter}"
-    _ticket_counter += 1
+    state = _current_state()
+    ticket_id = f"{project_key}-{state.ticket_counter}"
+    state.ticket_counter += 1
     return _log(
         "crear_ticket_en_jira",
         args,
@@ -141,6 +184,9 @@ def agendar_reunion_en_google_calendar(
         "duration_minutes": duration_minutes,
         "notes": notes,
     }
+    error = _string_error(args, ("summary", "start_time", "notes"))
+    if error:
+        return _log("agendar_reunion_en_google_calendar", args, {"ok": False, "error": error})
     if not isinstance(start_time, str):
         return _log(
             "agendar_reunion_en_google_calendar",
@@ -167,13 +213,13 @@ def agendar_reunion_en_google_calendar(
             args,
             {"ok": False, "error": "no se pueden agendar reuniones en el pasado"},
         )
-    if scheduled_at.weekday() >= 5:
+    if scheduled_at.astimezone(LIMA_TZ).weekday() >= 5:
         return _log(
             "agendar_reunion_en_google_calendar",
             args,
             {"ok": False, "error": "no se pueden agendar reuniones en fin de semana"},
         )
-    if duration_minutes not in VALID_DURATIONS:
+    if type(duration_minutes) is not int or duration_minutes not in VALID_DURATIONS:
         return _log(
             "agendar_reunion_en_google_calendar",
             args,
@@ -182,7 +228,7 @@ def agendar_reunion_en_google_calendar(
     if (
         not isinstance(attendees, list)
         or not attendees
-        or not all(isinstance(attendee, str) and "@" in attendee for attendee in attendees)
+        or not all(isinstance(attendee, str) and _valid_email(attendee) for attendee in attendees)
     ):
         return _log(
             "agendar_reunion_en_google_calendar",
@@ -213,6 +259,11 @@ def actualizar_contacto_en_crm(
         "lead_status": lead_status,
         "notes": notes,
     }
+    error = _string_error(args, tuple(args))
+    if error:
+        return _log("actualizar_contacto_en_crm", args, {"ok": False, "error": error})
+    if email and not _valid_email(email):
+        return _log("actualizar_contacto_en_crm", args, {"ok": False, "error": "email debe ser válido o vacío"})
     if lead_status not in VALID_LEAD_STATUSES:
         return _log(
             "actualizar_contacto_en_crm",

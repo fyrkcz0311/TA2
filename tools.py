@@ -134,7 +134,7 @@ TOOLS = [
                     "email": {
                         "type": "string",
                         "description": "Email del contacto. Solo si aparece literalmente en el correo o en la cabecera 'De:'. Si no se conoce, usar cadena vacía.",
-                        "format": "email",
+                        "anyOf": [{"type": "string", "format": "email"}, {"type": "string", "enum": [""]}],
                     },
                     "lead_status": {
                         "type": "string",

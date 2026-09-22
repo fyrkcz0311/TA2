@@ -131,7 +131,7 @@ def detect_inconsistencies(
     """
     seccion = _seccion(final_response, "ACCIONES EJECUTADAS")
     if seccion is None:
-        return []
+        return ["Falta la sección ACCIONES EJECUTADAS; no se puede verificar el resumen."]
 
     ejecutados = {
         call["result"]["id"]
@@ -140,7 +140,7 @@ def detect_inconsistencies(
         and call["result"].get("ok")
         and call["result"].get("id")
     }
-    declara_ninguna = seccion.lower().lstrip("- ").startswith("ninguna")
+    declara_ninguna = re.fullmatch(r"[-\s]*ninguna\.?\s*", seccion, re.IGNORECASE) is not None
 
     problemas: list[str] = []
     if seccion and not declara_ninguna and not ejecutados:
@@ -156,10 +156,52 @@ def detect_inconsistencies(
             + ", ".join(sorted(inventados))
             + "."
         )
+    if declara_ninguna:
+        if ejecutados:
+            problemas.append("El resumen declara Ninguna pero sí hay acciones ejecutadas.")
+        return problemas
+
+    if not seccion:
+        problemas.append("La sección ACCIONES EJECUTADAS está vacía.")
+    tipos = {
+        "crear_ticket_en_jira": r"\b(?:tickets?|jira|incidencias?)\b",
+        "agendar_reunion_en_google_calendar": r"\b(?:reuni[oó]n|reuniones|eventos?|calendar|demo|llamada)\b",
+        "actualizar_contacto_en_crm": r"\b(?:contactos?|crm)\b",
+    }
+    ids_por_tipo = {
+        name: {call["result"]["id"] for call in tool_calls
+               if call.get("name") == name and isinstance(call.get("result"), dict)
+               and call["result"].get("ok") is True and call["result"].get("id")}
+        for name in tipos
+    }
+    for linea in seccion.splitlines():
+        if not linea.strip():
+            continue
+        ids = set(ID_PATTERN.findall(linea))
+        if not ids.intersection(ejecutados):
+            problemas.append("Acción sin identificador de una ejecución exitosa: " + linea.strip())
+        for name, patron in tipos.items():
+            if re.search(patron, linea, re.IGNORECASE) and not ids.intersection(ids_por_tipo[name]):
+                problemas.append(f"La acción descrita no tiene un identificador válido de {name}: {linea.strip()}")
     return problemas
 
 
 def run_agent(
+    email_text: str,
+    today_iso: str,
+    client: Any | None = None,
+    model: str | None = None,
+    service_state: mock_services.ServiceState | None = None,
+) -> dict[str, Any]:
+    """Cada ejecución usa estado propio, o el de la sesión que la invoca."""
+    state = service_state if service_state is not None else mock_services.ServiceState()
+    with mock_services.service_session(state):
+        result = _run_agent(email_text, today_iso, client, model)
+        result["audit_log"] = mock_services.get_execution_log()
+        return result
+
+
+def _run_agent(
     email_text: str,
     today_iso: str,
     client: Any | None = None,
