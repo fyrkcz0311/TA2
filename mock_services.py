@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 import hashlib
 from typing import Any
 
@@ -21,13 +21,46 @@ VALID_LEAD_STATUSES = {
     "perdido",
 }
 
+LIMA_TZ = timezone(timedelta(hours=-5))
+
 EXECUTION_LOG: list[dict[str, Any]] = []
 _ticket_counter = 101
+_reference_date: date | None = None
+
+
+def set_reference_date(value: str | date | None) -> None:
+    """Fija la fecha simulada "hoy" que la interfaz permite mover.
+
+    Solo sirve para adelantar el reloj: ver `_earliest_allowed_start`.
+    None vuelve al reloj real.
+    """
+    global _reference_date
+    if value is None or isinstance(value, date):
+        _reference_date = value
+    else:
+        _reference_date = date.fromisoformat(value)
+
+
+def _earliest_allowed_start() -> datetime:
+    """Momento más temprano en el que se puede agendar.
+
+    Es el mayor entre la fecha simulada y la fecha real. Anclarlo solo a la
+    fecha simulada permitiría anular la validación retrocediendo el reloj:
+    con "hoy" en 2020 cualquier reunión de 2020 pasaría el control.
+    """
+    today = datetime.now(LIMA_TZ).date()
+    reference = max(_reference_date, today) if _reference_date else today
+    return datetime.combine(reference, time.min, tzinfo=LIMA_TZ)
 
 
 def reset_log() -> None:
     """Elimina la traza de ejecuciones registradas durante la sesión actual."""
     EXECUTION_LOG.clear()
+
+
+def get_execution_log() -> list[dict[str, Any]]:
+    """Devuelve una copia de la traza de auditoría de todas las herramientas ejecutadas."""
+    return list(EXECUTION_LOG)
 
 
 def _log(tool: str, args: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
@@ -128,6 +161,12 @@ def agendar_reunion_en_google_calendar(
             args,
             {"ok": False, "error": "start_time debe incluir zona horaria"},
         )
+    if scheduled_at < _earliest_allowed_start():
+        return _log(
+            "agendar_reunion_en_google_calendar",
+            args,
+            {"ok": False, "error": "no se pueden agendar reuniones en el pasado"},
+        )
     if scheduled_at.weekday() >= 5:
         return _log(
             "agendar_reunion_en_google_calendar",
@@ -210,6 +249,11 @@ TOOL_REGISTRY = {
 
 
 if __name__ == "__main__":
+    _demo = datetime.now(LIMA_TZ).date() + timedelta(days=1)
+    while _demo.weekday() >= 5:
+        _demo += timedelta(days=1)
+    _demo_iso = _demo.isoformat()
+
     print(
         crear_ticket_en_jira(
             "VENTAS",
@@ -223,7 +267,7 @@ if __name__ == "__main__":
         agendar_reunion_en_google_calendar(
             "Reunión técnica - TechCorp",
             ["ana.torres@techcorp.com", "proyectos@utpconsult.com"],
-            "2026-09-22T10:00:00-05:00",
+            f"{_demo_iso}T10:00:00-05:00",
             60,
             "FECHA TENTATIVA - confirmar con el cliente.",
         )
@@ -242,7 +286,7 @@ if __name__ == "__main__":
         agendar_reunion_en_google_calendar(
             "Reunión sin zona",
             ["ana.torres@techcorp.com"],
-            "2026-09-22T10:00:00",
+            f"{_demo_iso}T10:00:00",
             45,
             "Sin zona horaria.",
         )

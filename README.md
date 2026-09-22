@@ -21,14 +21,23 @@ cp .env.example .env
 
 Completa `LLM_API_KEY` en `.env`. De forma predeterminada se usa `https://api.deepseek.com` y el modelo `deepseek-chat`; ambos valores pueden cambiarse en ese archivo.
 
+`LLM_STRICT_TOOLS` controla si los schemas se envían con `"strict": true`, que obliga al proveedor a respetar enums, `additionalProperties` y `maxLength`. Si tu proveedor rechaza la petición por ese campo, ponlo en `false`; las validaciones de `mock_services.py` siguen actuando como segunda barrera.
+
 ## Ejecución
 
 ```bash
 streamlit run app.py
-python test_cli.py
 ```
 
-`test_cli.py` procesa `emails_prueba/01_techcorp.txt`. La aplicación permite escoger cualquiera de los tres correos de prueba.
+## Pruebas
+
+```bash
+python -m unittest test_utp_assistant   # 25 pruebas, sin red ni API key
+python test_cli.py                      # los 3 correos contra el proveedor real
+python test_cli.py 03_inyeccion.txt     # un correo concreto
+```
+
+`test_utp_assistant.py` usa un cliente LLM simulado, así que no consume créditos. Cubre el bucle de herramientas, la resolución de configuración, los schemas y las validaciones de los servicios simulados.
 
 ## Estructura
 
@@ -39,6 +48,7 @@ utp_assistant/
 ├── mock_services.py
 ├── tools.py
 ├── test_cli.py
+├── test_utp_assistant.py
 ├── emails_prueba/
 ├── requirements.txt
 └── .env.example
@@ -51,3 +61,9 @@ utp_assistant/
 | `crear_ticket_en_jira` | Registra requisitos, entregables o cambios de alcance. |
 | `agendar_reunion_en_google_calendar` | Programa reuniones, llamadas o demostraciones solicitadas. |
 | `actualizar_contacto_en_crm` | Crea o actualiza el contacto y su estado comercial. |
+
+Los tres schemas declaran `strict`, `additionalProperties: false` y todos sus parámetros como obligatorios. `mock_services.py` vuelve a validar cada argumento antes de simular el efecto, de modo que un argumento alucinado se rechaza con `{"ok": false, "error": ...}` y el modelo recibe ese error para corregirse.
+
+## Traza de auditoría
+
+Cada invocación queda registrada con sus argumentos, su resultado y su marca de tiempo. La interfaz la muestra al pie bajo "Traza de auditoría de la sesión"; en código se consulta con `mock_services.get_execution_log()`.

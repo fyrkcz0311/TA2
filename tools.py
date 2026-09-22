@@ -1,5 +1,6 @@
 """Contrato inmutable de herramientas para UTP Assistant."""
 
+import copy
 import json
 
 
@@ -39,6 +40,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "crear_ticket_en_jira",
+            "strict": True,
             "description": "Crea un ticket en Jira a partir de requisitos, entregables o cambios de alcance detectados en un correo de cliente. Usar solo cuando el correo contenga trabajo concreto que el equipo deba ejecutar. No usar para solicitudes de reunión ni para registrar contactos.",
             "parameters": {
                 "type": "object",
@@ -77,6 +79,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "agendar_reunion_en_google_calendar",
+            "strict": True,
             "description": "Crea un evento en Google Calendar cuando el correo solicita o propone una reunión, llamada o demo. Requiere una fecha concreta en ISO 8601 con zona horaria; nunca invocar sin al menos una fecha propuesta.",
             "parameters": {
                 "type": "object",
@@ -114,6 +117,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "actualizar_contacto_en_crm",
+            "strict": True,
             "description": "Crea o actualiza un contacto en el CRM cuando el remitente es nuevo, cambia su estado comercial o aporta datos de contacto nuevos. Usar el email como clave de deduplicación cuando esté disponible.",
             "parameters": {
                 "type": "object",
@@ -151,12 +155,30 @@ TOOLS = [
 TOOL_NAMES = [tool["function"]["name"] for tool in TOOLS]
 
 
+def get_tools(strict: bool = True) -> list[dict]:
+    """Devuelve una copia de los schemas lista para enviar a la API.
+
+    Con strict=True el proveedor garantiza que los argumentos respetan el schema
+    (enums, additionalProperties, maxLength). No todos los proveedores compatibles
+    con OpenAI lo soportan; strict=False elimina la clave para esos casos.
+    """
+    schemas = copy.deepcopy(TOOLS)
+    if not strict:
+        for tool in schemas:
+            tool["function"].pop("strict", None)
+    return schemas
+
+
 if __name__ == "__main__":
-    for tool in TOOLS:
-        function = tool.get("function", {})
-        parameters = function.get("parameters", {})
-        assert tool.get("type") == "function"
-        assert function.get("name")
-        assert function.get("description")
-        assert parameters.get("type") == "object"
-    print(json.dumps(TOOLS, indent=2, ensure_ascii=False))
+    for tool in get_tools():
+        function = tool["function"]
+        parameters = function["parameters"]
+        assert tool["type"] == "function"
+        assert function["name"]
+        assert function["description"]
+        assert function["strict"] is True
+        assert parameters["type"] == "object"
+        assert parameters["additionalProperties"] is False
+        # strict exige que toda propiedad declarada sea obligatoria.
+        assert sorted(parameters["properties"]) == sorted(parameters["required"]), function["name"]
+    print(json.dumps(get_tools(), indent=2, ensure_ascii=False))

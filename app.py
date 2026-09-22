@@ -9,8 +9,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 import streamlit as st
 
-from agent import run_agent
-from mock_services import reset_log
+import mock_services
+from agent import DEFAULT_BASE_URL, DEFAULT_MODEL, run_agent
 
 
 BASE_DIR = Path(__file__).parent
@@ -37,12 +37,19 @@ if "email_text" not in st.session_state:
     st.session_state["email_text"] = _read_test_email("01_techcorp.txt")
 
 with st.sidebar:
-    simulated_date = st.date_input("Fecha actual simulada", value=date.today())
-    st.caption(f"Modelo: {os.getenv('LLM_MODEL', 'No configurado')}")
-    st.caption(f"URL base: {os.getenv('LLM_BASE_URL', 'No configurada')}")
+    simulated_date = st.date_input(
+        "Fecha actual simulada",
+        value=date.today(),
+        min_value=date.today(),
+        help="Solo permite adelantar el reloj. Retroceder no habilitaría agendar "
+        "en el pasado: los servicios validan también contra la fecha real.",
+    )
+    st.caption(f"Modelo: {os.getenv('LLM_MODEL') or DEFAULT_MODEL}")
+    st.caption(f"URL base: {os.getenv('LLM_BASE_URL') or DEFAULT_BASE_URL}")
+    st.caption(f"Schemas strict: {os.getenv('LLM_STRICT_TOOLS') or 'true'}")
     if st.button("Limpiar historial"):
         st.session_state["runs"] = []
-        reset_log()
+        mock_services.reset_log()
 
 test_emails = sorted(path.name for path in EMAILS_DIR.glob("*.txt"))
 st.selectbox(
@@ -63,8 +70,11 @@ if st.button("Procesar correo", disabled=not bool(api_key)):
     st.session_state["runs"].insert(0, result)
 
 for run in st.session_state["runs"]:
+    if run["error"] is not None:
+        st.error(run["error"])
+
     st.subheader("Respuesta al equipo interno")
-    st.code(run["final_response"], language=None)
+    st.code(run["final_response"] or "(sin respuesta)", language=None)
 
     with st.expander(f"Herramientas invocadas ({len(run['tool_calls'])})"):
         if not run["tool_calls"]:
@@ -81,5 +91,10 @@ for run in st.session_state["runs"]:
     with st.expander("Historial de mensajes crudo"):
         st.json(run["messages"])
 
-    if run["error"] is not None:
-        st.error(run["error"])
+audit_log = mock_services.get_execution_log()
+st.divider()
+with st.expander(f"Traza de auditoría de la sesión ({len(audit_log)} llamadas)"):
+    if not audit_log:
+        st.write("Todavía no se ha ejecutado ninguna herramienta.")
+    else:
+        st.json(audit_log)
