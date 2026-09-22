@@ -3,6 +3,7 @@
 Aplicación Streamlit para que UTPConsult procese correos de clientes mediante function calling.
 Usa un modelo compatible con la API de OpenAI (DeepSeek por defecto) y servicios locales simulados.
 La interfaz conserva la respuesta interna y la traza completa de cada ejecución.
+El aspecto se define en `.streamlit/config.toml` (paleta y tipografías del tema) y en `styles.css`, que `app.py` inyecta al arrancar.
 
 ## Requisitos
 
@@ -43,7 +44,9 @@ Las suites `test_utp_assistant.py` y `test_regressions.py` usan clientes LLM sim
 
 ```text
 utp_assistant/
+├── .streamlit/config.toml
 ├── app.py
+├── styles.css
 ├── agent.py
 ├── mock_services.py
 ├── tools.py

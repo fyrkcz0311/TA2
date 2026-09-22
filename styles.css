@@ -1,0 +1,96 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Public+Sans:wght@400;500;600;700&display=swap');
+
+:root {
+  --paper: #f4f6f8;
+  --surface: #ffffff;
+  --ink: #14202b;
+  --muted: #5e7183;
+  --line: #d8dfe6;
+  --accent: #b5122e;
+  --ok: #16795c;
+  --warn: #9a6700;
+  --sans: "Public Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --radius: 6px;
+}
+
+.stApp { background: var(--paper); font-family: var(--sans); color: var(--ink); }
+.stApp h1, .stApp h2, .stApp h3 { font-family: var(--sans); letter-spacing: -0.012em; }
+.block-container { max-width: 1160px; padding-top: 2.4rem; padding-bottom: 4rem; }
+section[data-testid="stSidebar"] { border-right: 1px solid var(--line); }
+
+/* Encabezado */
+.masthead { border-left: 3px solid var(--accent); padding-left: 0.9rem; margin-bottom: 1.8rem; }
+
+.masthead p { margin: 0.45rem 0 0; max-width: 64ch; color: var(--muted); font-size: 0.95rem; line-height: 1.55; }
+
+/* Títulos de sección y de ficha.
+   Van con el contenedor delante para ganar a los tamaños que Streamlit da a h1-h3. */
+[data-testid="stMarkdownContainer"] h1.masthead-title { margin: 0; padding: 0;
+  font-size: 1.95rem; font-weight: 700; line-height: 1.15; letter-spacing: -0.018em; }
+[data-testid="stMarkdownContainer"] h2.section-title { margin: 0 0 0.7rem; padding: 0;
+  font-size: 1.02rem; font-weight: 600; line-height: 1.3; color: var(--ink); }
+[data-testid="stMarkdownContainer"] h2.card-title,
+[data-testid="stMarkdownContainer"] h3.card-title { margin: 1rem 0 0.45rem; padding: 0;
+  font-size: 0.84rem; font-weight: 600; line-height: 1.3; color: var(--muted); }
+
+/* Lista de lectura: etiqueta a la izquierda, valor en mono a la derecha */
+.readout { border-top: 1px solid var(--line); }
+.readout-row { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem;
+  padding: 0.5rem 0.1rem; border-bottom: 1px solid var(--line); font-size: 0.88rem; }
+.readout-row span { color: var(--muted); }
+.readout-row b { font-family: var(--mono); font-weight: 500; font-size: 0.82rem; text-align: right; overflow-wrap: anywhere; }
+.readout-row.is-alert b { color: var(--warn); }
+
+/* Cabecera de cada ejecución */
+.run-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.7rem; }
+.run-head .run-n { font-weight: 600; font-size: 1rem; }
+.run-head .meta { font-family: var(--mono); font-size: 0.78rem; color: var(--muted);
+  padding-left: 0.7rem; border-left: 1px solid var(--line); }
+
+.chip { font-size: 0.72rem; font-weight: 600; padding: 0.14rem 0.52rem; border-radius: 999px;
+  border: 1px solid transparent; letter-spacing: 0.01em; }
+.chip-ok { color: var(--ok); background: rgba(22, 121, 92, 0.09); border-color: rgba(22, 121, 92, 0.22); }
+.chip-warn { color: var(--warn); background: rgba(154, 103, 0, 0.10); border-color: rgba(154, 103, 0, 0.24); }
+.chip-fail { color: var(--accent); background: rgba(181, 18, 46, 0.08); border-color: rgba(181, 18, 46, 0.22); }
+
+/* Registro de herramientas invocadas */
+.tool-row { display: grid; grid-template-columns: 1.4rem auto 1fr auto; align-items: center;
+  gap: 0.7rem; padding: 0.45rem 0.1rem; border-bottom: 1px solid var(--line); }
+.tool-row .n { font-family: var(--mono); font-size: 0.78rem; color: var(--muted); }
+.tool-row .name { font-family: var(--mono); font-size: 0.84rem; overflow-wrap: anywhere; }
+.tool-row .id { font-family: var(--mono); font-size: 0.8rem; color: var(--muted); text-align: right; overflow-wrap: anywhere; }
+.tool-row .id.is-error { color: var(--accent); }
+
+/* Estado vacío */
+.empty { border: 1px dashed var(--line); border-radius: var(--radius); padding: 1.5rem;
+  background: rgba(255, 255, 255, 0.6); color: var(--muted); font-size: 0.92rem; line-height: 1.55; }
+
+/* Fichas: fondo blanco solo en el contenedor con borde que lleva el ancla.
+   La cadena de hijos evita pintar también a los contenedores que lo envuelven;
+   si la estructura de Streamlit cambia, la ficha se queda transparente y con borde. */
+div[data-testid="stVerticalBlockBorderWrapper"]:has(> div > [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"] .card-anchor),
+div[data-testid="stVerticalBlockBorderWrapper"]:has(> [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"] .card-anchor) {
+  background: var(--surface);
+}
+
+/* El correo entrante es texto crudo: se lee en mono */
+.stTextArea textarea { font-family: var(--mono); font-size: 0.84rem; line-height: 1.6; }
+[data-testid="stCode"] { border: 1px solid var(--line); border-radius: var(--radius); }
+.stButton button { font-weight: 600; }
+[data-testid="stExpander"] summary p { font-size: 0.88rem; font-weight: 500; }
+
+/* Fuera el botón de despliegue: esto es una herramienta interna, no un sitio publicado. */
+[data-testid="stAppDeployButton"] { display: none; }
+
+/* En la barra lateral no hay ancho para dos columnas: etiqueta arriba, valor debajo. */
+.readout.is-stacked .readout-row { flex-direction: column; align-items: flex-start; gap: 0.15rem; }
+.readout.is-stacked .readout-row b { text-align: left; }
+
+/* Avisos y errores en la paleta de la página, no en la de Streamlit. */
+[data-testid="stAlertContainer"] { border-radius: var(--radius); border: 1px solid var(--line);
+  background: var(--surface); color: var(--ink); font-size: 0.9rem; }
+[data-testid="stAlertContainer"]:has([data-testid="stAlertContentWarning"]) {
+  background: rgba(154, 103, 0, 0.07); border-color: rgba(154, 103, 0, 0.28); }
+[data-testid="stAlertContainer"]:has([data-testid="stAlertContentError"]) {
+  background: rgba(181, 18, 46, 0.06); border-color: rgba(181, 18, 46, 0.26); }

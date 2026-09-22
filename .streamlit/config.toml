@@ -1,0 +1,12 @@
+[theme]
+base = "light"
+primaryColor = "#14202b"
+backgroundColor = "#f4f6f8"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#14202b"
+linkColor = "#1b4d8f"
+borderColor = "#d8dfe6"
+baseRadius = "small"
+font = "Public Sans, system-ui, sans-serif"
+headingFont = "Public Sans, system-ui, sans-serif"
+codeFont = "IBM Plex Mono, ui-monospace, monospace"
