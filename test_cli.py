@@ -1,11 +1,12 @@
 """Ejecuta los correos de prueba contra el proveedor real, sin la interfaz Streamlit."""
 
-from datetime import date
+from datetime import datetime
 import json
 from pathlib import Path
 import sys
 
 from agent import ConfigError, resolve_config, run_agent
+from mock_services import LIMA_TZ
 
 EMAILS_DIR = Path(__file__).parent / "emails_prueba"
 
@@ -34,7 +35,7 @@ def procesar(email_path: Path, today_iso: str) -> bool:
         print("Resultado:")
         print(json.dumps(call["result"], indent=2, ensure_ascii=False))
     print()
-    return True
+    return not result["warnings"]
 
 
 def main() -> int:
@@ -46,7 +47,7 @@ def main() -> int:
         return 1
 
     print(f"Modelo: {config.model} ({config.base_url})\n")
-    today_iso = date.today().isoformat()
+    today_iso = datetime.now(LIMA_TZ).date().isoformat()
 
     seleccion = sys.argv[1:] or sorted(path.name for path in EMAILS_DIR.glob("*.txt"))
     fallos = [nombre for nombre in seleccion if not procesar(EMAILS_DIR / nombre, today_iso)]

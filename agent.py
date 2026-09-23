@@ -12,7 +12,8 @@ import openai
 
 import mock_services
 from mock_services import TOOL_REGISTRY
-from tools import SYSTEM_PROMPT, get_tools
+from safety import redact_text, redact_value, sanitize_email
+from tools import SYSTEM_PROMPT, get_response_tools
 
 
 DEFAULT_BASE_URL = "https://api.deepseek.com"
@@ -26,12 +27,11 @@ SECCIONES = ("RESUMEN", "ACCIONES EJECUTADAS", "PENDIENTES", "SIGUIENTE PASO SUG
 ID_PATTERN = re.compile(r"\b(?:VENTAS|PROY)-\d+\b|\b(?:evt|crm)_[0-9a-f]{8}\b")
 
 CORRECCION = (
-    "VERIFICACIÓN AUTOMÁTICA FALLIDA. "
-    "Tu resumen declara acciones que en realidad no se ejecutaron: {detalle} "
-    "Solo cuenta como ejecutada una acción si invocaste la herramienta y recibiste "
-    "su identificador. Corrige ahora: invoca las herramientas que correspondan, o "
-    "reescribe el resumen con 'ACCIONES EJECUTADAS: Ninguna' y mueve lo que no "
-    "pudiste hacer a PENDIENTES."
+    "VERIFICACIÓN AUTOMÁTICA FALLIDA. Se detectaron estas inconsistencias u "
+    "omisiones: {detalle} Solo cuenta como ejecutada una acción si invocaste "
+    "la herramienta y recibiste su identificador. Invoca las herramientas "
+    "justificadas o reescribe el resumen y registra en PENDIENTES lo que no "
+    "pudiste hacer."
 )
 
 
@@ -79,18 +79,6 @@ def get_client(config: Config | None = None) -> openai.OpenAI:
     return openai.OpenAI(api_key=config.api_key, base_url=config.base_url)
 
 
-def _serialize_tool_call(tool_call: Any) -> dict[str, Any]:
-    function = getattr(tool_call, "function", None)
-    return {
-        "id": getattr(tool_call, "id", ""),
-        "type": getattr(tool_call, "type", "function"),
-        "function": {
-            "name": getattr(function, "name", ""),
-            "arguments": getattr(function, "arguments", ""),
-        },
-    }
-
-
 def _execute_tool(name: str, raw_arguments: str) -> tuple[Any, dict[str, Any]]:
     """Valida y ejecuta una herramienta, devolviendo (argumentos, resultado)."""
     try:
@@ -106,6 +94,53 @@ def _execute_tool(name: str, raw_arguments: str) -> tuple[Any, dict[str, Any]]:
         return arguments, TOOL_REGISTRY[name](**arguments)
     except TypeError as exc:
         return arguments, {"ok": False, "error": f"parámetros inválidos: {exc}"}
+
+
+def _response_text(items: list[dict[str, Any]]) -> str:
+    """Extrae el texto final de los items de Responses sin incluir razonamiento."""
+    return "\n".join(
+        part.get("text", "")
+        for item in items
+        if item.get("type") == "message" and item.get("role") == "assistant"
+        for part in item.get("content", [])
+        if isinstance(part, dict) and part.get("type") == "output_text"
+    ).strip()
+
+
+def detect_missing_actions(email_text: str, tool_calls: list[dict[str, Any]]) -> list[str]:
+    """Señala requisitos explícitos que el modelo dejó sin registrar."""
+    problems: list[str] = []
+    sender = re.search(r"(?im)^De:\s*[^\s@]+@([^\s@]+\.[^\s@]+)", email_text)
+    has_sender_email = sender is not None
+    identified_contact = re.search(
+        r"\b(?:somos|saludos[,\s]+)\s*[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+\s+"
+        r"[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+\s+de\s+[A-ZÁÉÍÓÚÑ][\w-]+",
+        email_text,
+        re.IGNORECASE,
+    ) is not None
+    has_requirement = re.search(
+        r"\b(?:necesitamos|solicitamos|requerimos|queremos)\s+que\b|"
+        r"\bdebe\s+(?:permitir|incluir|mostrar|generar|implementar)\b",
+        email_text,
+        re.IGNORECASE,
+    ) is not None
+    ticket_created = any(
+        call.get("name") == "crear_ticket_en_jira" and call["result"].get("ok") is True
+        for call in tool_calls
+    )
+    company_from_domain = bool(sender) and sender.group(1).split(".")[0].lower() not in {
+        "gmail", "hotmail", "outlook", "yahoo", "icloud",
+    }
+    if has_requirement and (company_from_domain or identified_contact) and not ticket_created:
+        problems.append("El correo contiene un requisito funcional explícito y no se creó un ticket.")
+
+    crm_updated = any(
+        call.get("name") == "actualizar_contacto_en_crm" and call["result"].get("ok") is True
+        for call in tool_calls
+    )
+    if has_sender_email and identified_contact and has_requirement and not crm_updated:
+        problems.append("El remitente está identificado y expresa una necesidad concreta, pero no se actualizó el CRM.")
+    return problems
 
 
 def _seccion(text: str, header: str) -> str | None:
@@ -214,6 +249,7 @@ def _run_agent(
     warnings: list[str] = []
     error: str | None = None
     correccion_pedida = False
+    known_secrets: tuple[str, ...] = ()
 
     try:
         # Los servicios simulados validan contra la misma fecha que ve el modelo.
@@ -226,49 +262,34 @@ def _run_agent(
         else:
             model = model or DEFAULT_MODEL
 
-        active_tools = get_tools(strict=strict_tools_enabled())
+        safe_email, known_secrets = sanitize_email(email_text)
+        active_tools = get_response_tools(strict=strict_tools_enabled())
+        instructions = SYSTEM_PROMPT + "\n\nFECHA ACTUAL: " + today_iso + " (zona horaria America/Lima)"
         messages = [
-            {
-                "role": "system",
-                "content": (
-                    SYSTEM_PROMPT
-                    + "\n\nFECHA ACTUAL: "
-                    + today_iso
-                    + " (zona horaria America/Lima)"
-                ),
-            },
-            {"role": "user", "content": "CORREO ENTRANTE:\n\n" + email_text},
+            {"role": "user", "content": "CORREO ENTRANTE:\n\n" + safe_email},
         ]
 
         for _ in range(MAX_ITERATIONS):
-            completion = client.chat.completions.create(
+            response = client.responses.create(
                 model=model,
-                messages=messages,
+                instructions=instructions,
+                input=messages,
                 tools=active_tools,
                 tool_choice="auto",
                 temperature=0,
             )
-            message = completion.choices[0].message
-            tool_calls = list(getattr(message, "tool_calls", None) or [])
-            content = getattr(message, "content", None)
-
-            assistant_message: dict[str, Any] = {
-                "role": getattr(message, "role", "assistant"),
-                "content": content,
-            }
-            # Un assistant message con "tool_calls": [] es inválido para la API,
-            # así que la clave solo se incluye cuando hay llamadas reales.
-            if tool_calls:
-                assistant_message["tool_calls"] = [
-                    _serialize_tool_call(call) for call in tool_calls
-                ]
-            messages.append(assistant_message)
-
-            # La presencia de tool_calls es la única señal fiable: algunos
-            # proveedores (DeepSeek) devuelven finish_reason="stop" con llamadas.
+            if getattr(response, "status", "completed") in {"failed", "incomplete"}:
+                error = "El proveedor no completó la respuesta; revisa sus límites o inténtalo de nuevo."
+                break
+            output = redact_value(response.model_dump().get("output", []), known_secrets)
+            messages.extend(output)
+            tool_calls = [item for item in output if item.get("type") == "function_call"]
             if not tool_calls:
-                candidato = content or ""
-                problemas = detect_inconsistencies(candidato, tool_calls_summary)
+                candidato = _response_text(output)
+                problemas = (
+                    detect_inconsistencies(candidato, tool_calls_summary)
+                    + detect_missing_actions(safe_email, tool_calls_summary)
+                )
                 # Se le da una sola oportunidad de corregirse; si insiste, la
                 # advertencia viaja hasta la interfaz en lugar de silenciarse.
                 if problemas and not correccion_pedida:
@@ -276,7 +297,9 @@ def _run_agent(
                     messages.append(
                         {
                             "role": "user",
-                            "content": CORRECCION.format(detalle=" ".join(problemas)),
+                            "content": CORRECCION.format(detalle=" ".join(problemas))
+                            + " Si omitiste un requisito funcional explícito, crea su ticket "
+                            "con la información conocida y deja las dudas en PENDIENTES.",
                         }
                     )
                     continue
@@ -284,19 +307,19 @@ def _run_agent(
                 warnings = problemas
                 break
 
-            for serialized_call in assistant_message["tool_calls"]:
-                name = serialized_call["function"]["name"]
+            for call in tool_calls:
+                name = call.get("name", "")
                 arguments, result = _execute_tool(
-                    name, serialized_call["function"]["arguments"]
+                    name, call.get("arguments", "")
                 )
                 tool_calls_summary.append(
                     {"name": name, "arguments": arguments, "result": result}
                 )
                 messages.append(
                     {
-                        "role": "tool",
-                        "tool_call_id": serialized_call["id"],
-                        "content": json.dumps(result, ensure_ascii=False),
+                        "type": "function_call_output",
+                        "call_id": call.get("call_id", ""),
+                        "output": json.dumps(result, ensure_ascii=False),
                     }
                 )
         else:
@@ -310,15 +333,15 @@ def _run_agent(
             error = "El modelo no devolvió una respuesta final para el equipo interno."
 
     except ConfigError as exc:
-        error = str(exc)
+        error = redact_text(str(exc), known_secrets)
     except openai.AuthenticationError as exc:
-        error = f"El proveedor rechazó las credenciales (revisa LLM_API_KEY): {exc}"
+        error = redact_text(f"El proveedor rechazó las credenciales (revisa LLM_API_KEY): {exc}", known_secrets)
     except openai.APIConnectionError as exc:
-        error = f"No se pudo conectar con el proveedor (revisa LLM_BASE_URL): {exc}"
+        error = redact_text(f"No se pudo conectar con el proveedor (revisa LLM_BASE_URL): {exc}", known_secrets)
     except openai.APIStatusError as exc:
-        error = f"El proveedor devolvió un error HTTP {exc.status_code}: {exc}"
+        error = redact_text(f"El proveedor devolvió un error HTTP {exc.status_code}: {exc}", known_secrets)
     except Exception as exc:
-        error = f"Error inesperado: {type(exc).__name__}: {exc}"
+        error = redact_text(f"Error inesperado: {type(exc).__name__}: {exc}", known_secrets)
 
     if error is not None:
         final_response = ""

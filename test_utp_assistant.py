@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import date, timedelta
 import json
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ import unittest
 
 import agent
 import mock_services
+import safety
 import tools
 
 
@@ -26,58 +28,38 @@ REFERENCIA = REFERENCIA_FUTURA.isoformat()
 REFERENCIA_PASADA = _dia_habil(HOY - timedelta(days=365))
 
 
-class _FakeFunction:
-    def __init__(self, name: str, arguments: str) -> None:
-        self.name = name
-        self.arguments = arguments
+class _FakeResponse:
+    def __init__(self, content, raw_calls) -> None:
+        self.output = [
+            {"type": "function_call", "call_id": f"call_{index}",
+             "name": name, "arguments": arguments}
+            for index, (name, arguments) in enumerate(raw_calls)
+        ]
+        if content is not None:
+            self.output.append({"type": "message", "role": "assistant",
+                                "content": [{"type": "output_text", "text": content}]})
 
-
-class _FakeToolCall:
-    def __init__(self, call_id: str, name: str, arguments: str) -> None:
-        self.id = call_id
-        self.type = "function"
-        self.function = _FakeFunction(name, arguments)
-
-
-class _FakeMessage:
-    def __init__(self, content, tool_calls) -> None:
-        self.role = "assistant"
-        self.content = content
-        self.tool_calls = tool_calls
-
-
-class _FakeChoice:
-    def __init__(self, finish_reason, message) -> None:
-        self.finish_reason = finish_reason
-        self.message = message
-
-
-class _FakeCompletion:
-    def __init__(self, choice) -> None:
-        self.choices = [choice]
+    def model_dump(self):
+        return {"output": self.output}
 
 
 class FakeClient:
     """Reproduce una lista de turnos del LLM sin tocar la red.
 
-    Cada turno es (finish_reason, content, [(nombre_herramienta, argumentos_json)]).
+    Cada turno es (estado_ignorado, content, [(nombre_herramienta, argumentos_json)]).
     Si se agotan los turnos se repite el último, para poder probar bucles largos.
     """
 
     def __init__(self, turns) -> None:
         self.turns = list(turns)
         self.requests: list[dict] = []
-        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+        self.responses = SimpleNamespace(create=self._create)
 
     def _create(self, **kwargs):
-        self.requests.append(kwargs)
+        self.requests.append(deepcopy(kwargs))
         turn = self.turns.pop(0) if len(self.turns) > 1 else self.turns[0]
-        finish_reason, content, raw_calls = turn
-        calls = [
-            _FakeToolCall(f"call_{index}", name, arguments)
-            for index, (name, arguments) in enumerate(raw_calls)
-        ]
-        return _FakeCompletion(_FakeChoice(finish_reason, _FakeMessage(content, calls)))
+        _, content, raw_calls = turn
+        return _FakeResponse(content, raw_calls)
 
 
 CRM_ARGS = json.dumps(
@@ -107,6 +89,16 @@ class ConfiguracionTest(unittest.TestCase):
         self.assertEqual(config.model, "gpt-4o")
 
 
+class RedaccionTest(unittest.TestCase):
+    def test_oculta_secretos_comunes_y_es_idempotente(self):
+        source = "Contraseña: abc123. API_KEY=sk-test123456789. Tarjeta 4111 1111 1111 1111."
+        safe, secrets = safety.sanitize_email(source)
+        self.assertNotIn("abc123", safe)
+        self.assertNotIn("sk-test", safe)
+        self.assertNotIn("4111", safe)
+        self.assertEqual(safety.redact_text(safe, secrets), safe)
+
+
 class SchemaHerramientasTest(unittest.TestCase):
     def test_todas_las_herramientas_declaran_strict(self):
         for tool in tools.get_tools():
@@ -127,6 +119,14 @@ class SchemaHerramientasTest(unittest.TestCase):
     def test_get_tools_no_muta_la_definicion_original(self):
         tools.get_tools(strict=False)
         self.assertTrue(all("strict" in t["function"] for t in tools.get_tools()))
+
+    def test_responses_conserva_los_tres_contratos(self):
+        response_tools = tools.get_response_tools()
+        self.assertEqual(len(response_tools), 3)
+        for response_tool, original in zip(response_tools, tools.get_tools()):
+            self.assertEqual(response_tool["name"], original["function"]["name"])
+            self.assertEqual(response_tool["parameters"], original["function"]["parameters"])
+            self.assertTrue(response_tool["strict"])
 
 
 class ServiciosSimuladosTest(unittest.TestCase):
@@ -245,8 +245,7 @@ class BucleDelAgenteTest(unittest.TestCase):
         mock_services.reset_log()
         mock_services.set_reference_date(REFERENCIA)
 
-    def test_ejecuta_herramientas_aunque_finish_reason_sea_stop(self):
-        """DeepSeek devuelve finish_reason='stop' junto con tool_calls."""
+    def test_ejecuta_herramientas_en_responses(self):
         client = FakeClient(
             [
                 ("stop", None, [("actualizar_contacto_en_crm", CRM_ARGS)]),
@@ -259,15 +258,16 @@ class BucleDelAgenteTest(unittest.TestCase):
         self.assertEqual(result["final_response"], "RESUMEN: listo")
         self.assertIsNone(result["error"])
 
-    def test_ejecuta_herramientas_con_finish_reason_tool_calls(self):
+    def test_ejecuta_varias_herramientas_en_un_response(self):
         client = FakeClient(
             [
-                ("tool_calls", None, [("actualizar_contacto_en_crm", CRM_ARGS)]),
+                ("tool_calls", None, [("actualizar_contacto_en_crm", CRM_ARGS),
+                                      ("crear_ticket_en_jira", TICKET_ARGS)]),
                 ("stop", "RESUMEN: listo", []),
             ]
         )
         result = agent.run_agent("correo", REFERENCIA, client=client)
-        self.assertEqual(len(result["tool_calls"]), 1)
+        self.assertEqual(len(result["tool_calls"]), 2)
         self.assertEqual(result["final_response"], "RESUMEN: listo")
 
     def test_devuelve_error_si_se_exceden_las_iteraciones(self):
@@ -286,9 +286,7 @@ class BucleDelAgenteTest(unittest.TestCase):
     def test_informa_error_legible_si_el_proveedor_falla(self):
         class ClienteQueFalla:
             def __init__(self):
-                self.chat = SimpleNamespace(
-                    completions=SimpleNamespace(create=self._boom)
-                )
+                self.responses = SimpleNamespace(create=self._boom)
 
             def _boom(self, **kwargs):
                 raise RuntimeError("401 Unauthorized")
@@ -321,12 +319,9 @@ class BucleDelAgenteTest(unittest.TestCase):
     def test_envia_la_fecha_de_referencia_en_el_system_prompt(self):
         client = FakeClient([("stop", "RESUMEN: listo", [])])
         agent.run_agent("correo", REFERENCIA, client=client)
-        system_message = client.requests[0]["messages"][0]
-        self.assertEqual(system_message["role"], "system")
-        self.assertIn(REFERENCIA, system_message["content"])
+        self.assertIn(REFERENCIA, client.requests[0]["instructions"])
 
-    def test_no_envia_tool_calls_vacias_al_proveedor(self):
-        """Un assistant message con tool_calls=[] es invalido para la API."""
+    def test_devuelve_resultados_de_funciones_al_proveedor(self):
         client = FakeClient(
             [
                 ("tool_calls", None, [("actualizar_contacto_en_crm", CRM_ARGS)]),
@@ -334,10 +329,50 @@ class BucleDelAgenteTest(unittest.TestCase):
             ]
         )
         agent.run_agent("correo", REFERENCIA, client=client)
-        for request in client.requests:
-            for message in request["messages"]:
-                if message.get("role") == "assistant":
-                    self.assertNotEqual(message.get("tool_calls", None), [])
+        second_input = client.requests[1]["input"]
+        self.assertTrue(any(item.get("type") == "function_call" for item in second_input))
+        self.assertTrue(any(item.get("type") == "function_call_output" for item in second_input))
+
+    def test_requisito_explicito_omitido_exige_correccion(self):
+        client = FakeClient([
+            ("stop", RESUMEN_SIN_ACCIONES, []),
+            ("tool_calls", None, [("crear_ticket_en_jira", TICKET_ARGS)]),
+            ("stop", "RESUMEN: listo\nACCIONES EJECUTADAS: Ticket VENTAS-101 creado.\nPENDIENTES: Ninguno", []),
+        ])
+        result = agent.run_agent(
+            "De: ana@techcorp.com\nNecesitamos que el portal permita descargar reportes mensuales.",
+            REFERENCIA, client=client,
+        )
+        self.assertEqual(len(client.requests), 3)
+        self.assertTrue(result["tool_calls"][0]["result"]["ok"])
+        self.assertEqual(result["warnings"], [])
+
+    def test_contacto_identificado_y_requisito_omitidos_se_detectan(self):
+        email = ("De: lucia.ramos@innovatech.com\n"
+                 "Somos Lucía Ramos de InnovaTech. Necesitamos que el portal permita descargar reportes.")
+        problems = agent.detect_missing_actions(email, [])
+        self.assertEqual(len(problems), 2)
+        self.assertIn("ticket", problems[0])
+        self.assertIn("CRM", problems[1])
+
+    def test_no_exige_ticket_sin_datos_para_identificar_al_cliente(self):
+        self.assertEqual(
+            agent.detect_missing_actions("Necesitamos que el portal permita descargar reportes.", []),
+            [],
+        )
+
+    def test_secretos_no_llegan_al_modelo_ni_a_la_traza(self):
+        crm_with_secret = json.loads(CRM_ARGS)
+        crm_with_secret["notes"] = "La contraseña es abc123"
+        client = FakeClient([
+            ("tool_calls", None, [("actualizar_contacto_en_crm", json.dumps(crm_with_secret))]),
+            ("stop", "RESUMEN: La contraseña es abc123.\nACCIONES EJECUTADAS: Contacto crm_ac8192b6 actualizado.\nPENDIENTES: Ninguno", []),
+        ])
+        result = agent.run_agent("Mi contraseña es abc123. Necesito información.", REFERENCIA, client=client)
+        self.assertIsNone(result["error"])
+        for value in (client.requests, result):
+            self.assertNotIn("abc123", json.dumps(value, ensure_ascii=False))
+        self.assertIn("[DATO SENSIBLE OMITIDO]", json.dumps(result, ensure_ascii=False))
 
 
 RESUMEN_ALUCINADO = """RESUMEN: Lucia Ramos, de InnovaTech, solicita el portal de clientes.

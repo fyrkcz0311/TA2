@@ -105,7 +105,7 @@ _html(
     '<header class="masthead">'
     '<h1 class="masthead-title">UTP Assistant</h1>'
     "<p>Pega el correo de un cliente de UTP Consult. El agente decide qué hacer, "
-    "ejecuta las acciones en Jira, Calendar y CRM, y deja registrado lo que realmente "
+    "simula las acciones en Jira, Calendar y CRM, y deja registrado lo que realmente "
     "llegó a ejecutarse.</p>"
     "</header>"
 )

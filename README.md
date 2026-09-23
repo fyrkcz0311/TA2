@@ -1,7 +1,7 @@
 # UTP Assistant
 
 Aplicación Streamlit para que UTPConsult procese correos de clientes mediante function calling.
-Usa un modelo compatible con la API de OpenAI (DeepSeek por defecto) y servicios locales simulados.
+Usa la API Responses compatible con OpenAI (DeepSeek por defecto) y servicios locales simulados.
 La interfaz conserva la respuesta interna y la traza completa de cada ejecución.
 El aspecto se define en `.streamlit/config.toml` (paleta y tipografías del tema) y en `styles.css`, que `app.py` inyecta al arrancar.
 
@@ -20,9 +20,17 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Completa `LLM_API_KEY` en `.env`. De forma predeterminada se usa `https://api.deepseek.com` y el modelo `deepseek-chat`; ambos valores pueden cambiarse en ese archivo.
+Completa `LLM_API_KEY` en `.env`. De forma predeterminada se usa `https://api.deepseek.com` y el modelo `deepseek-chat`; ambos valores pueden cambiarse en ese archivo. DeepSeek acepta ese nombre como alias del modelo actual. Para usar OpenAI se necesita una clave propia de OpenAI, su URL base y un modelo que admita llamadas a funciones.
+
+## Arquitectura y ciclo de ejecución
+
+El programa usa `responses.create` con el prompt de sistema y los tres esquemas de funciones. Tras recibir un correo, oculta localmente secretos reconocibles, envía el texto al modelo, atiende los items `function_call`, ejecuta los servicios simulados y devuelve cada `function_call_output` al modelo. Repite ese ciclo hasta obtener el resumen final. El historial de items se conserva en memoria durante la ejecución y la interfaz guarda una traza por sesión.
+
+DeepSeek ofrece el formato Responses, pero su API es sin estado: el programa reenvía el historial en cada solicitud. No usa Assistants, Threads, Runs ni `requires_action`, que pertenecían a la API Assistants retirada. El equivalente actual en este programa es la secuencia `function_call` → ejecución local → `function_call_output` → respuesta final. Los servicios son simulados: no se crean objetos reales en Jira, Google Calendar o un CRM.
 
 `LLM_STRICT_TOOLS` controla si los schemas se envían con `"strict": true`, que obliga al proveedor a respetar enums, `additionalProperties` y `maxLength`. Si tu proveedor rechaza la petición por ese campo, ponlo en `false`; las validaciones de `mock_services.py` siguen actuando como segunda barrera.
+
+Antes de enviar un correo al modelo, `safety.py` oculta contraseñas, tokens, claves de API y secuencias largas de dígitos con patrones reconocibles. También filtra las llamadas a funciones y la respuesta antes de guardarlas en la traza. Esto reduce filtraciones accidentales, pero los patrones no garantizan detectar todo dato sensible posible; para correos reales se requiere una política de clasificación y revisión adicional.
 
 ## Ejecución
 
@@ -38,7 +46,7 @@ python test_cli.py                      # los 3 correos contra el proveedor real
 python test_cli.py 03_inyeccion.txt     # un correo concreto
 ```
 
-Las suites `test_utp_assistant.py` y `test_regressions.py` usan clientes LLM simulados, así que no consumen créditos. Cubren el bucle de herramientas, la configuración, los schemas, las validaciones, el aislamiento entre sesiones y la interfaz Streamlit.
+Las suites `test_utp_assistant.py` y `test_regressions.py` usan clientes LLM simulados, así que no consumen créditos. Cubren el bucle de herramientas con Responses, la configuración, los schemas, las validaciones, la protección de secretos, el aislamiento entre sesiones y la interfaz Streamlit.
 
 ## Estructura
 
@@ -49,6 +57,7 @@ utp_assistant/
 ├── styles.css
 ├── agent.py
 ├── mock_services.py
+├── safety.py
 ├── tools.py
 ├── test_cli.py
 ├── test_utp_assistant.py
